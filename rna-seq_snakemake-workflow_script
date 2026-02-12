@@ -1,0 +1,97 @@
+SAMPLES = ["G1_rep1", "G1_rep2", "G1_rep3","G2_rep1", "G2_rep2", "G2_rep3"]
+
+inputdir = "/home/ubuntu/Session_10-11-2025_Exercise/ref_files/seqdata-tar_files"
+resultdir = "/home/ubuntu/snm_gene_expression_final_workflow"
+
+#rule all:
+#    input:
+#        expand(resultdir+"/step1_cutadapt_results/{sample}_filtered_read1.fastq.gz", sample = SAMPLES),
+#        expand(resultdir+"/step1_cutadapt_results/{sample}_filtered_read2.fastq.gz", sample = SAMPLES)
+
+rule all:
+    input:
+        expand(resultdir + "/step3_mapped_results/{sample}_Aligned.sortedByCoord.out.bam", sample = SAMPLES),
+        expand(resultdir + "/step2_fastqc_results/{sample}_filtered_read1_fastqc.html", sample = SAMPLES),
+        expand(resultdir + "/step3_mapped_results/{sample}_Aligned.sortedByCoord.out.bam.bai", sample = SAMPLES),
+        resultdir + "/step5_features_count_results/all_samples_featureCounts.txt",
+        resultdir + "/step6_deseq2_results/deseq_today_2.txt"
+
+# 1. Filtering raw fastq files using cutadapt
+rule cutadapt:
+    input:
+        f1 = inputdir + "/{sample}_read1.fastq.gz",
+        f2 = inputdir + "/{sample}_read2.fastq.gz"
+    output:
+        o1 = resultdir + "/step1_cutadapt_results/{sample}_filtered_read1.fastq.gz",
+        o2 = resultdir + "/step1_cutadapt_results/{sample}_filtered_read2.fastq.gz"
+    shell:
+        "cutadapt --minimum-length 25 --cut 10 -q 30 -o {output.o1} -p {output.o2} {input.f1} {input.f2}"
+
+# 2. Quality control on filtered fastq files using fastqc
+rule fastqc:
+    input: 
+        f1 = resultdir + "/step1_cutadapt_results/{sample}_filtered_read1.fastq.gz",
+        f2 = resultdir + "/step1_cutadapt_results/{sample}_filtered_read2.fastq.gz"
+    output:
+        o1 = resultdir + "/step2_fastqc_results/{sample}_filtered_read1_fastqc.zip",
+        o2 = resultdir + "/step2_fastqc_results/{sample}_filtered_read1_fastqc.html",
+        o3 = resultdir + "/step2_fastqc_results/{sample}_filtered_read2_fastqc.zip",
+        o4 = resultdir + "/step2_fastqc_results/{sample}_filtered_read2_fastqc.html"
+    shell:
+        """
+        mkdir -p {resultdir}/step2_fastqc_results
+        fastqc {input.f1} {input.f2} -o {resultdir}/step2_fastqc_results/
+        """
+
+# 3. Mapping the filtered fastq files to ref genome using STAR
+rule STAR:
+    input:
+        f1 = resultdir + "/step1_cutadapt_results/{sample}_filtered_read1.fastq.gz",
+        f2 = resultdir + "/step1_cutadapt_results/{sample}_filtered_read2.fastq.gz"
+    output:
+        bam = resultdir + "/step3_mapped_results/{sample}_Aligned.sortedByCoord.out.bam"
+    shell:
+        """
+        mkdir -p {resultdir}/step3_mapped_results/
+        STAR --genomeDir /home/ubuntu/Session_10-11-2025_Exercise/ref_files/genome_fasta_annotation/genome_dir_index_output \
+             --readFilesIn {input.f1} {input.f2} \
+             --readFilesCommand zcat \
+             --outFileNamePrefix {resultdir}/step3_mapped_results/{wildcards.sample}_ \
+             --outSAMtype BAM SortedByCoordinate
+        """
+
+# 4. Indexind bam files using Samtools
+rule Samtools:
+    input: 
+        bam_input = resultdir + "/step3_mapped_results/{sample}_Aligned.sortedByCoord.out.bam"
+    output:
+        o = resultdir + "/step3_mapped_results/{sample}_Aligned.sortedByCoord.out.bam.bai"
+    shell:
+         "samtools index {input.bam_input} {output.o}"
+
+# 5. Counts the no. of genes getting aligned to the genes using featureCounts
+rule featureCounts:
+    input:
+        bam_input = expand(resultdir + "/step3_mapped_results/{sample}_Aligned.sortedByCoord.out.bam", sample=SAMPLES),
+        gtf = "/home/ubuntu/Session_10-11-2025_Exercise/ref_files/genome_fasta_annotation/annotation.gtf"
+    output:
+        o =  resultdir + "/step5_features_count_results/all_samples_featureCounts.txt"
+    shell:
+        """
+        mkdir -p {resultdir}/step5_features_count_results/
+        featureCounts -p -F GTF -g gene_name -s 2 -a {input.gtf} -o {output.o} {input.bam_input}
+        """    
+
+# 6. Differential Expression analysis of the read counts data after normalization using Deseq2
+rule deseq2:
+    input:
+        counts = resultdir + "/step5_features_count_results/all_samples_featureCounts.txt",
+        script = "/home/ubuntu/snm_gene_expression_final_workflow/deseq_script.r"
+    output:
+        resultdir + "/step6_deseq2_results/deseq_today_2.txt"
+    shell:
+        """
+        mkdir -p {resultdir}/step6_deseq2_results/
+        Rscript {input.script} {input.counts} {output}
+        """
+
